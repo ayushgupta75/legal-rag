@@ -12,9 +12,6 @@ __pycache__/
 dist/
 build/
 
-# Data
-data/
-
 # macOS
 .DS_Store
 

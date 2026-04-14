@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>US Legal RAG</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f5f5f0;
+      color: #1a1a1a;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+    }
+    header {
+      background: #1a2744;
+      color: #fff;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    header h1 { font-size: 17px; font-weight: 600; }
+    header span { font-size: 12px; opacity: 0.6; margin-left: auto; }
+
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .msg {
+      max-width: 760px;
+      width: 100%;
+      padding: 14px 18px;
+      border-radius: 10px;
+      font-size: 15px;
+      line-height: 1.6;
+    }
+    .msg.user {
+      background: #1a2744;
+      color: #fff;
+      align-self: flex-end;
+      border-radius: 10px 10px 2px 10px;
+    }
+    .msg.assistant {
+      background: #fff;
+      border: 1px solid #e0ddd6;
+      align-self: flex-start;
+      border-radius: 10px 10px 10px 2px;
+    }
+    .msg .meta {
+      margin-top: 10px;
+      font-size: 12px;
+      opacity: 0.55;
+      display: flex;
+      gap: 12px;
+    }
+    .msg .citations {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid #e8e5de;
+      font-size: 12px;
+    }
+    .msg .citations strong { display: block; margin-bottom: 4px; color: #555; }
+    .msg .citations li { margin-left: 16px; color: #444; line-height: 1.5; }
+
+    .typing { display: flex; gap: 4px; align-items: center; padding: 16px 18px; }
+    .typing span {
+      width: 7px; height: 7px; background: #bbb; border-radius: 50%;
+      animation: bounce 1.2s infinite;
+    }
+    .typing span:nth-child(2) { animation-delay: .2s; }
+    .typing span:nth-child(3) { animation-delay: .4s; }
+    @keyframes bounce {
+      0%, 80%, 100% { transform: translateY(0); }
+      40% { transform: translateY(-6px); }
+    }
+
+    #input-bar {
+      background: #fff;
+      border-top: 1px solid #e0ddd6;
+      padding: 16px 24px;
+      display: flex;
+      gap: 10px;
+      align-items: flex-end;
+    }
+    #input-bar textarea {
+      flex: 1;
+      resize: none;
+      border: 1px solid #d0cec8;
+      border-radius: 8px;
+      padding: 10px 14px;
+      font-size: 15px;
+      font-family: inherit;
+      line-height: 1.5;
+      max-height: 140px;
+      outline: none;
+      color: #1a1a1a;
+      background: #fafafa;
+    }
+    #input-bar textarea:focus { border-color: #1a2744; background: #fff; }
+    #send-btn {
+      background: #1a2744;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 15px;
+      cursor: pointer;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+    #send-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    #send-btn:hover:not(:disabled) { background: #253562; }
+
+    .pill {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 500;
+      background: #eef1f8;
+      color: #1a2744;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/>
+    <line x1="9" y1="21" x2="9" y2="9"/>
+  </svg>
+  <h1>US Legal Research Assistant</h1>
+  <span>Powered by Claude + LangGraph + pgvector</span>
+</header>
+
+<div id="chat">
+  <div class="msg assistant">
+    Ask me anything about US federal law — the Constitution, US Code, CFR regulations, or case law.
+    <div class="meta">
+      <span>Ready</span>
+    </div>
+  </div>
+</div>
+
+<div id="input-bar">
+  <textarea id="query" rows="1" placeholder="e.g. What does the Fourth Amendment protect against?"></textarea>
+  <button id="send-btn">Ask</button>
+</div>
+
+<script>
+  const API_BASE = "http://localhost:8000";
+  let threadId = null;
+
+  const chatEl = document.getElementById("chat");
+  const queryEl = document.getElementById("query");
+  const sendBtn = document.getElementById("send-btn");
+
+  function autoResize() {
+    queryEl.style.height = "auto";
+    queryEl.style.height = Math.min(queryEl.scrollHeight, 140) + "px";
+  }
+  queryEl.addEventListener("input", autoResize);
+  queryEl.addEventListener("keydown", e => {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendQuery(); }
+  });
+  sendBtn.addEventListener("click", sendQuery);
+
+  function appendMsg(role, html) {
+    const div = document.createElement("div");
+    div.className = `msg ${role}`;
+    div.innerHTML = html;
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+    return div;
+  }
+
+  function showTyping() {
+    const div = document.createElement("div");
+    div.className = "msg assistant typing";
+    div.id = "typing";
+    div.innerHTML = "<span></span><span></span><span></span>";
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  function removeTyping() {
+    document.getElementById("typing")?.remove();
+  }
+
+  async function sendQuery() {
+    const query = queryEl.value.trim();
+    if (!query) return;
+
+    appendMsg("user", escHtml(query));
+    queryEl.value = "";
+    autoResize();
+    sendBtn.disabled = true;
+    showTyping();
+
+    try {
+      const res = await fetch(`${API_BASE}/query`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, thread_id: threadId }),
+      });
+      const data = await res.json();
+      threadId = data.thread_id;
+
+      removeTyping();
+
+      const citationsHtml = data.citations?.length
+        ? `<div class="citations">
+             <strong>Sources</strong>
+             <ul>${data.citations.map(c => `<li>${escHtml(c)}</li>`).join("")}</ul>
+           </div>`
+        : "";
+
+      appendMsg("assistant", `
+        ${escHtml(data.answer).replace(/\n/g, "<br>")}
+        ${citationsHtml}
+        <div class="meta">
+          <span class="pill">${data.route}</span>
+          <span>${data.latency_ms}ms</span>
+        </div>
+      `);
+    } catch (err) {
+      removeTyping();
+      appendMsg("assistant", `<span style="color:#b33">Error: ${escHtml(err.message)}</span>`);
+    } finally {
+      sendBtn.disabled = false;
+      queryEl.focus();
+    }
+  }
+
+  function escHtml(str) {
+    return String(str)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+</script>
+</body>
+</html>

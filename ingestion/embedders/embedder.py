@@ -1,10 +1,11 @@
 """
 Embedder: converts LegalChunkData → vector embeddings → pgvector upsert.
-Uses batched OpenAI calls to stay within rate limits.
+Uses parallel OpenAI calls for maximum throughput.
 """
 import time
 import logging
-from openai import OpenAI
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from openai import OpenAI, RateLimitError
 from sqlalchemy.orm import Session
 from ingestion.db import LegalChunk, SessionLocal
 from ingestion.chunkers.legal_chunker import LegalChunkData
@@ -14,8 +15,9 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 client = OpenAI(api_key=settings.openai_api_key)
 
-BATCH_SIZE = 100        # OpenAI allows up to 2048 inputs per call
-RATE_LIMIT_SLEEP = 0.5  # seconds between batches
+BATCH_SIZE   = 200  # chunks per OpenAI call
+MAX_WORKERS  = 3    # parallel calls in flight
+SUBMIT_DELAY = 0.5  # seconds between batch submissions
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
@@ -28,35 +30,56 @@ def embed_texts(texts: list[str]) -> list[list[float]]:
     return [item.embedding for item in response.data]
 
 
+def _embed_batch(batch_idx: int, batch: list[LegalChunkData]) -> tuple[int, list, list]:
+    """Embed one batch with exponential backoff on rate limit errors."""
+    for attempt in range(6):
+        try:
+            vectors = embed_texts([c.text for c in batch])
+            return batch_idx, batch, vectors
+        except RateLimitError:
+            wait = 2 ** attempt
+            logger.warning(f"Rate limit on batch {batch_idx + 1}, retrying in {wait}s…")
+            time.sleep(wait)
+    raise RuntimeError(f"Batch {batch_idx + 1} failed after 6 retries")
+
+
 def upsert_chunks(chunks: list[LegalChunkData], db: Session | None = None) -> int:
     """
-    Embed and upsert a list of LegalChunkData into pgvector.
-    Returns the count of rows inserted/updated.
+    Embed chunks in parallel and upsert into pgvector.
+    Returns count of rows inserted.
     """
     close_session = db is None
     if db is None:
         db = SessionLocal()
 
+    batches = [
+        (i // BATCH_SIZE, chunks[i : i + BATCH_SIZE])
+        for i in range(0, len(chunks), BATCH_SIZE)
+    ]
+    total_batches = len(batches)
+    results: dict[int, tuple[list, list]] = {}
+
+    logger.info(f"Embedding {len(chunks)} chunks in {total_batches} batches "
+                f"({MAX_WORKERS} parallel workers)…")
+
+    # Embed in parallel with staggered submissions
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+        futures = {}
+        for idx, batch in batches:
+            futures[executor.submit(_embed_batch, idx, batch)] = idx
+            time.sleep(SUBMIT_DELAY)
+        for future in as_completed(futures):
+            batch_idx, batch, vectors = future.result()
+            results[batch_idx] = (batch, vectors)
+            logger.info(f"  Embedded batch {batch_idx + 1}/{total_batches}")
+
+    # Upsert in order
     inserted = 0
     try:
-        for i in range(0, len(chunks), BATCH_SIZE):
-            batch = chunks[i : i + BATCH_SIZE]
-            texts = [c.text for c in batch]
-
-            logger.info(f"Embedding batch {i // BATCH_SIZE + 1} ({len(batch)} chunks)…")
-            vectors = embed_texts(texts)
-
+        for idx in sorted(results):
+            batch, vectors = results[idx]
             for chunk, vector in zip(batch, vectors):
-                # Skip if identical content already exists
-                existing = (
-                    db.query(LegalChunk)
-                    .filter_by(version_hash=chunk.version_hash)
-                    .first()
-                )
-                if existing:
-                    continue
-
-                row = LegalChunk(
+                db.merge(LegalChunk(
                     id=chunk.id,
                     source=chunk.source,
                     title=chunk.title,
@@ -69,13 +92,9 @@ def upsert_chunks(chunks: list[LegalChunkData], db: Session | None = None) -> in
                     version_hash=chunk.version_hash,
                     extra_metadata=chunk.metadata,
                     embedding=vector,
-                )
-                db.merge(row)
+                ))
                 inserted += 1
-
-            db.commit()
-            time.sleep(RATE_LIMIT_SLEEP)
-
+        db.commit()
         logger.info(f"Upserted {inserted} chunks into pgvector.")
         return inserted
 
@@ -93,18 +112,13 @@ def similarity_search(
     top_k: int = 8,
     source_filter: str | None = None,
 ) -> list[dict]:
-    """
-    Embed a query and return top-K similar chunks from pgvector.
-    Returns list of dicts with text, citation, score.
-    """
+    """Embed a query and return top-K similar chunks from pgvector."""
     query_vector = embed_texts([query_text])[0]
     db = SessionLocal()
     try:
         q = db.query(LegalChunk)
         if source_filter:
             q = q.filter(LegalChunk.source == source_filter)
-
-        # cosine distance (<=> operator via pgvector)
         results = (
             q.order_by(LegalChunk.embedding.cosine_distance(query_vector))
             .limit(top_k)
@@ -118,7 +132,7 @@ def similarity_search(
                 "section": r.section,
                 "title": r.title,
                 "text": r.text,
-                "score": 1.0,  # actual score requires raw SQL; placeholder
+                "score": 1.0,
             }
             for r in results
         ]

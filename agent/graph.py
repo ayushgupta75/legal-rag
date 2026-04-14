@@ -3,7 +3,7 @@ LangGraph graph definition.
 Wires all nodes, conditional edges, and the Redis checkpointer together.
 """
 from langgraph.graph import StateGraph, END
-from langgraph.checkpoint.redis import RedisSaver
+from langgraph.checkpoint.memory import MemorySaver
 from agent.state import AgentState
 from agent.nodes.nodes import (
     query_analysis_node,
@@ -67,6 +67,5 @@ def build_graph(checkpointer=None):
 
 
 def get_graph():
-    """Return a compiled graph with Redis checkpointer."""
-    checkpointer = RedisSaver.from_conn_string(settings.redis_url)
-    return build_graph(checkpointer=checkpointer)
+    """Return a compiled graph with in-memory checkpointer."""
+    return build_graph(checkpointer=MemorySaver())
