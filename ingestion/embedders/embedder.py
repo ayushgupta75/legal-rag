@@ -7,6 +7,7 @@ import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from openai import OpenAI, RateLimitError
 from sqlalchemy.orm import Session
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from ingestion.db import LegalChunk, SessionLocal
 from ingestion.chunkers.legal_chunker import LegalChunkData
 from config import get_settings
@@ -63,6 +64,7 @@ def upsert_chunks(chunks: list[LegalChunkData], db: Session | None = None) -> in
                 f"({MAX_WORKERS} parallel workers)…")
 
     # Embed in parallel with staggered submissions
+    t_embed_start = time.time()
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {}
         for idx, batch in batches:
@@ -71,31 +73,48 @@ def upsert_chunks(chunks: list[LegalChunkData], db: Session | None = None) -> in
         for future in as_completed(futures):
             batch_idx, batch, vectors = future.result()
             results[batch_idx] = (batch, vectors)
-            logger.info(f"  Embedded batch {batch_idx + 1}/{total_batches}")
+            done = len(results)
+            logger.info(f"  Embedded batch {batch_idx + 1}/{total_batches} "
+                        f"({done}/{total_batches} complete, "
+                        f"{done * 100 // total_batches}%)")
+    embed_secs = time.time() - t_embed_start
+    logger.info(f"All {total_batches} batches embedded in {embed_secs:.1f}s "
+                f"({len(chunks) / embed_secs:.0f} chunks/s)")
 
-    # Upsert in order
+    # Upsert in order — bulk INSERT ... ON CONFLICT DO UPDATE (one statement per batch)
+    logger.info(f"Upserting {len(chunks)} chunks into pgvector…")
+    t_upsert_start = time.time()
     inserted = 0
     try:
         for idx in sorted(results):
             batch, vectors = results[idx]
-            for chunk, vector in zip(batch, vectors):
-                db.merge(LegalChunk(
-                    id=chunk.id,
-                    source=chunk.source,
-                    title=chunk.title,
-                    section=chunk.section,
-                    jurisdiction=chunk.jurisdiction,
-                    citation=chunk.citation,
-                    text=chunk.text,
-                    char_count=chunk.char_count,
-                    effective_date=chunk.effective_date,
-                    version_hash=chunk.version_hash,
-                    extra_metadata=chunk.metadata,
-                    embedding=vector,
-                ))
-                inserted += 1
+            rows = [
+                {
+                    "id": chunk.id,
+                    "source": chunk.source,
+                    "title": chunk.title,
+                    "section": chunk.section,
+                    "jurisdiction": chunk.jurisdiction,
+                    "citation": chunk.citation,
+                    "text": chunk.text,
+                    "char_count": chunk.char_count,
+                    "effective_date": chunk.effective_date,
+                    "metadata": chunk.metadata,
+                    "embedding": vector,
+                }
+                for chunk, vector in zip(batch, vectors)
+            ]
+            stmt = pg_insert(LegalChunk.__table__).values(rows)
+            stmt = stmt.on_conflict_do_update(
+                index_elements=["id"],
+                set_={c: stmt.excluded[c] for c in rows[0] if c != "id"},
+            )
+            db.execute(stmt)
+            inserted += len(rows)
         db.commit()
-        logger.info(f"Upserted {inserted} chunks into pgvector.")
+        upsert_secs = time.time() - t_upsert_start
+        logger.info(f"Done — upserted {inserted} chunks in {upsert_secs:.1f}s "
+                    f"(total: {embed_secs + upsert_secs:.1f}s)")
         return inserted
 
     except Exception as e:

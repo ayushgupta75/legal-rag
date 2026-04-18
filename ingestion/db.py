@@ -30,7 +30,6 @@ class LegalChunk(Base):
     text = Column(Text, nullable=False)             # raw chunk text
     char_count = Column(Integer)
     effective_date = Column(String)                 # ISO date string or None
-    version_hash = Column(String)                   # sha256 of text for dedup
     extra_metadata = Column("metadata", JSON, default=dict)
     embedding = Column(Vector(1536))                # text-embedding-3-small dim
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
@@ -52,22 +51,13 @@ class QueryLog(Base):
 
 
 def init_db():
-    """Create pgvector extension + all tables."""
+    """Create pgvector extension + all tables. Does NOT build the HNSW index —
+    call rebuild_hnsw_index() after all data is loaded for best performance."""
     with engine.connect() as conn:
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         conn.commit()
     Base.metadata.create_all(engine)
-
-    # HNSW index for fast ANN search
-    with engine.connect() as conn:
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS legal_chunks_embedding_idx
-            ON legal_chunks
-            USING hnsw (embedding vector_cosine_ops)
-            WITH (m = 16, ef_construction = 64)
-        """))
-        conn.commit()
-    print("Database initialised with pgvector + HNSW index.")
+    print("Database initialised.")
 
 
 if __name__ == "__main__":

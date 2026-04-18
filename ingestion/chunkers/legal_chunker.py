@@ -7,8 +7,8 @@ exceeds MAX_CHARS.  Every chunk carries full citation metadata and a parent_id
 so callers can do parent-doc retrieval.
 """
 import re
-import hashlib
 import uuid
+
 from dataclasses import dataclass, field
 from typing import Iterator
 
@@ -35,13 +35,9 @@ class LegalChunkData:
     text: str
     char_count: int
     effective_date: str | None
-    version_hash: str
     parent_id: str | None = None
     metadata: dict = field(default_factory=dict)
 
-
-def _hash(text: str) -> str:
-    return hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
 def _split(text: str, pattern: re.Pattern) -> list[str]:
@@ -135,7 +131,6 @@ def chunk_document(
             text=top_text.strip(),
             char_count=len(top_text.strip()),
             effective_date=effective_date,
-            version_hash=_hash(top_text),
             parent_id=None,
             metadata=extra_metadata or {},
         )
@@ -157,7 +152,6 @@ def chunk_document(
                     text=child_text.strip(),
                     char_count=len(child_text.strip()),
                     effective_date=effective_date,
-                    version_hash=_hash(child_text),
                     parent_id=top_id,
                     metadata=extra_metadata or {},
                 )
