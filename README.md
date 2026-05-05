@@ -30,7 +30,7 @@ query_analysis          ← classifies query type, expands legal terminology
     │
     ▼
 router
-    ├─── simple     ──→ vector_retrieve ──────────────┐
+    ├─── simple     ──→ vector_retrieve ───────────,───┐
     ├─── multi_source→ live_tools ────────────────────┤
     │                                                  ▼
     │                                           merge_context   ← dedup + rerank
