@@ -27,6 +27,18 @@ services:
       timeout: 5s
       retries: 5
 
+  qdrant:
+    image: qdrant/qdrant:latest
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrantdata:/qdrant/storage
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
   api:
     build: .
     ports:
@@ -35,10 +47,13 @@ services:
     environment:
       POSTGRES_HOST: postgres
       REDIS_URL: redis://redis:6379
+      QDRANT_HOST: qdrant
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      qdrant:
         condition: service_healthy
     command: uvicorn api.main:app --host 0.0.0.0 --port 8000 --reload
     volumes:
@@ -46,3 +61,4 @@ services:
 
 volumes:
   pgdata:
+  qdrantdata:

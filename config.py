@@ -28,6 +28,11 @@ class Settings(BaseSettings):
     langchain_api_key: str = ""
     langchain_project: str = "legal-rag"
 
+    # Qdrant
+    qdrant_host: str = "localhost"
+    qdrant_port: int = 6333
+    qdrant_collection: str = "legal_chunks"
+
     # App
     app_env: str = "development"
     log_level: str = "INFO"

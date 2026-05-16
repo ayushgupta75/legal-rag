@@ -18,8 +18,7 @@ import logging
 from pathlib import Path
 sys.path.insert(0, ".")
 
-from sqlalchemy import text
-from ingestion.db import init_db, engine
+from ingestion.db import init_db
 from ingestion.chunkers.legal_chunker import (
     chunk_constitution, chunk_uscode, chunk_cfr
 )
@@ -146,25 +145,6 @@ CFR_TITLES = {
 CONSTITUTION_FILE = "data/constitution.txt"
 
 
-def drop_hnsw_index():
-    with engine.connect() as conn:
-        conn.execute(text("DROP INDEX IF EXISTS legal_chunks_embedding_idx"))
-        conn.commit()
-    logger.info("HNSW index dropped — inserts will be fast.")
-
-
-def rebuild_hnsw_index():
-    logger.info("Rebuilding HNSW index over all data (this takes a minute)…")
-    with engine.connect() as conn:
-        conn.execute(text("""
-            CREATE INDEX IF NOT EXISTS legal_chunks_embedding_idx
-            ON legal_chunks
-            USING hnsw (embedding vector_cosine_ops)
-            WITH (m = 16, ef_construction = 64)
-        """))
-        conn.commit()
-    logger.info("HNSW index ready.")
-
 
 def ingest_constitution():
     logger.info("── Ingesting US Constitution ──")
@@ -225,26 +205,10 @@ def main():
         nargs="*",
         help="Title numbers to ingest (for uscode or cfr)",
     )
-    parser.add_argument(
-        "--skip-index",
-        action="store_true",
-        help="Skip rebuilding the HNSW index at the end (use when more titles still to come)",
-    )
-    parser.add_argument(
-        "--rebuild-index",
-        action="store_true",
-        help="Only rebuild the HNSW index — skip all ingestion",
-    )
     args = parser.parse_args()
-
-    if args.rebuild_index:
-        init_db()
-        rebuild_hnsw_index()
-        return
 
     logger.info("=== Initialising database ===")
     init_db()
-    drop_hnsw_index()
 
     if args.source in ("all", "constitution"):
         ingest_constitution()
@@ -257,10 +221,6 @@ def main():
         titles = args.titles or list(CFR_TITLES.keys())
         ingest_cfr(titles)
 
-    if args.skip_index:
-        logger.info("Skipping HNSW index rebuild (--skip-index). Run without --skip-index on the last title.")
-    else:
-        rebuild_hnsw_index()
     logger.info("=== Ingestion complete ===")
 
 

@@ -8,6 +8,7 @@ so callers can do parent-doc retrieval.
 """
 import re
 import uuid
+import hashlib
 
 from dataclasses import dataclass, field
 from typing import Iterator
@@ -37,6 +38,10 @@ class LegalChunkData:
     effective_date: str | None
     parent_id: str | None = None
     metadata: dict = field(default_factory=dict)
+
+    @property
+    def version_hash(self) -> str:
+        return hashlib.md5(self.text.encode()).hexdigest()
 
 
 
