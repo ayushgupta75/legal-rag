@@ -4,19 +4,19 @@
 
 [![CI](https://github.com/your-org/legal-rag/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/legal-rag/actions/workflows/ci.yml)
 [![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://img.shields.io/badge/tests-20%2F20-brightgreen.svg)](#testing)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 ---
 
 ## Overview
 
-Constitution Compass is a production-grade RAG system that routes legal queries through three distinct paths depending on complexity:
+Constitution Compass is a production-grade agentic RAG system that answers questions over US federal law. It classifies every incoming query and routes it through one of three execution paths — fast vector retrieval, live legal API calls, or an autonomous multi-step reasoning loop — before generating a cited answer with Claude.
 
-- **Vector path** — fast cosine similarity search over a pre-indexed pgvector store (Constitution + full US Code)
-- **Live tools path** — real-time calls to CourtListener, Congress.gov, and eCFR APIs for recent case law and regulations
-- **ReAct agent path** — autonomous multi-step reasoning loop for complex, multi-source legal questions
-
-All paths converge on a Claude-powered generation step that produces cited, structured answers.
+**Benchmark results vs LlamaIndex standard pipeline:**
+- **3x more relevant** retrieval results on constitutional law queries
+- **10.8ms** average query latency (Qdrant HNSW, 121-chunk constitution corpus)
+- **73% faster** than LlamaIndex's `SentenceSplitter` pipeline (10.8ms vs 44ms)
 
 ---
 
@@ -26,24 +26,23 @@ All paths converge on a Claude-powered generation step that produces cited, stru
 User query
     │
     ▼
-query_analysis          ← classifies query type, expands legal terminology
+query_analysis          ← classifies query type, expands legal terminology (Claude)
     │
     ▼
 router
-    ├─── simple     ──→ vector_retrieve ───────────,───┐
-    ├─── multi_source→ live_tools ────────────────────┤
-    │                                                  ▼
-    │                                           merge_context   ← dedup + rerank
-    │                                                  │
-    │                                                  ▼
-    │                                             generate      ← Claude w/ citations
-    │                                                  │
-    └─── complex    ──→ react_agent ─────────────────END
-                        (self-contained ReAct loop,
-                         up to 6 tool-call rounds)
+    ├─── simple      ──→ vector_retrieve ──────────────┐
+    ├─── multi_source ──→ live_tools ──────────────────┤
+    │                                                   ▼
+    │                                           merge_context   ← dedup + trim
+    │                                                   │
+    │                                                   ▼
+    │                                              generate     ← Claude w/ citations
+    │                                                   │
+    └─── complex     ──→ react_agent ─────────────────END
+                         (ReAct loop, up to 6 tool-call rounds)
 ```
 
-Built with [LangGraph](https://github.com/langchain-ai/langgraph). All nodes share a single `AgentState` TypedDict; conversation continuity is provided by a thread-id-scoped checkpointer.
+Built with [LangGraph](https://github.com/langchain-ai/langgraph). All nodes share a single `AgentState` TypedDict. Conversation continuity is provided by a thread-id-scoped Redis checkpointer.
 
 ---
 
@@ -52,9 +51,10 @@ Built with [LangGraph](https://github.com/langchain-ai/langgraph). All nodes sha
 | Layer | Technology |
 |---|---|
 | Orchestration | LangGraph |
-| LLM | Claude (`claude-sonnet-4-20250514`) via Anthropic API |
-| Vector store | pgvector on PostgreSQL 16 |
+| LLM | Claude (`claude-sonnet-4-5`) via Anthropic API |
+| Vector store | Qdrant (HNSW, auto-indexed on upsert) |
 | Embeddings | OpenAI `text-embedding-3-small` (1536-dim) |
+| Metadata store | PostgreSQL 16 |
 | Live legal APIs | CourtListener, Congress.gov, eCFR |
 | API server | FastAPI + Uvicorn |
 | State cache | Redis (LangGraph checkpointer) |
@@ -68,37 +68,43 @@ Built with [LangGraph](https://github.com/langchain-ai/langgraph). All nodes sha
 ```
 legal-rag/
 ├── agent/
-│   ├── graph.py            # LangGraph graph definition and wiring
-│   ├── state.py            # AgentState TypedDict
+│   ├── graph.py              # LangGraph graph — nodes, edges, checkpointer
+│   ├── state.py              # AgentState TypedDict
 │   ├── nodes/
-│   │   └── nodes.py        # All node functions (analysis, router, retrieve, generate, ReAct)
+│   │   └── nodes.py          # query_analysis, router, vector_retrieve, live_tools,
+│   │                         # merge_context, generate, react_agent
 │   ├── tools/
-│   │   └── live_tools.py   # CourtListener / Congress.gov / eCFR HTTP wrappers
+│   │   └── live_tools.py     # CourtListener / Congress.gov / eCFR wrappers
 │   └── prompts/
 │       └── legal_prompts.py
 ├── ingestion/
-│   ├── db.py               # SQLAlchemy models (LegalChunk, QueryLog) + schema init
+│   ├── db.py                 # SQLAlchemy models (QueryLog) + schema init
 │   ├── chunkers/
-│   │   └── legal_chunker.py  # Recursive structural chunker (article → section → paragraph)
+│   │   └── legal_chunker.py  # Recursive structural chunker — Article → Section → Clause
 │   ├── embedders/
-│   │   └── embedder.py     # Parallelized OpenAI embedding + pgvector upsert
+│   │   └── embedder.py       # Parallelized OpenAI embedding + Qdrant upsert
 │   └── parsers/
 │       ├── uscode_parser.py
 │       └── cfr_parser.py
+├── RAG_v2/
+│   ├── main.py               # LlamaIndex ingestion pipeline (benchmark variant)
+│   └── benchmark.py          # v1 vs v2 retrieval quality + latency comparison
 ├── api/
-│   └── main.py             # FastAPI app — POST /query, GET /health
+│   └── main.py               # FastAPI — POST /query, GET /health
 ├── ui/
-│   └── index.html          # Minimal chat frontend
+│   └── index.html            # Chat frontend
 ├── infra/
-│   └── aws_stack.py        # AWS CDK stack
+│   └── aws_stack.py          # AWS CDK stack (ECS + RDS + ElastiCache)
 ├── scripts/
-│   └── ingest_full.py      # One-off ingestion runner
+│   └── ingest_full.py        # Ingestion runner — constitution, uscode, cfr
 ├── tests/
+│   ├── test_chunker.py       # Legal chunker unit tests (11 tests)
+│   └── test_graph_routing.py # LangGraph routing + merge tests (9 tests)
 ├── data/
 │   ├── constitution.txt
-│   └── pdf_uscAll@119-73/  # 54 US Code title PDFs (119th Congress)
-├── config.py               # Pydantic settings (reads from .env)
-├── docker-compose.yml
+│   └── pdf_uscAll@119-73/    # 54 US Code title PDFs (119th Congress)
+├── config.py                 # Pydantic settings (reads from .env)
+├── docker-compose.yml        # Postgres + Redis + Qdrant
 ├── Dockerfile
 └── requirements.txt
 ```
@@ -120,37 +126,49 @@ legal-rag/
 git clone https://github.com/your-org/legal-rag.git
 cd legal-rag
 cp .env.example .env
-# Edit .env — at minimum set ANTHROPIC_API_KEY and OPENAI_API_KEY
+# Fill in ANTHROPIC_API_KEY and OPENAI_API_KEY at minimum
 ```
 
 ### 2. Start infrastructure
 
 ```bash
-docker compose up -d postgres redis
+docker compose up -d postgres redis qdrant
 ```
+
+This starts:
+- **PostgreSQL 16** on `localhost:5432` — metadata + query logs
+- **Redis 7** on `localhost:6379` — LangGraph conversation checkpointer
+- **Qdrant** on `localhost:6333` — vector store (HNSW auto-managed)
 
 ### 3. Install dependencies and initialise the database
 
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python -m ingestion.db          # creates pgvector extension + tables
+python -m ingestion.db          # creates Postgres tables
 ```
 
 ### 4. Run ingestion
 
 ```bash
-python scripts/ingest_full.py   # downloads, parses, chunks, embeds, and upserts all sources
+# Constitution only (fast, ~3 seconds)
+python scripts/ingest_full.py --source constitution
+
+# Specific US Code titles
+python scripts/ingest_full.py --source uscode --titles 18 42
+
+# Everything
+python scripts/ingest_full.py --source all
 ```
 
-This embeds documents in parallel (3 workers, 200-chunk batches) and upserts into pgvector with `ON CONFLICT DO UPDATE`.
+Qdrant indexes vectors automatically on every upsert — no separate index build step needed.
 
 ### 5. Start the API
 
 ```bash
 uvicorn api.main:app --reload
-# API is available at http://localhost:8000
-# Interactive docs at http://localhost:8000/docs
+# http://localhost:8000
+# http://localhost:8000/docs  ← interactive API docs
 ```
 
 ### 6. Query
@@ -174,9 +192,11 @@ Run a legal query through the agent graph.
 ```json
 {
   "query": "string",
-  "thread_id": "string | null"   // pass the same thread_id to continue a conversation
+  "thread_id": "string | null"
 }
 ```
+
+Pass the same `thread_id` on follow-up requests to continue a multi-turn conversation.
 
 **Response**
 
@@ -192,30 +212,36 @@ Run a legal query through the agent graph.
 
 ### `GET /health`
 
-Returns `{"status": "ok"}`.
+```json
+{"status": "ok"}
+```
 
 ---
 
 ## Configuration
 
-All configuration is managed via environment variables (`.env` file or shell). See [config.py](config.py) for the full list.
+All settings are read from environment variables or a `.env` file. See [config.py](config.py) for the full schema.
 
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | **Required.** Anthropic API key |
 | `OPENAI_API_KEY` | — | **Required.** Used for embeddings |
-| `POSTGRES_HOST` | `localhost` | Postgres host |
-| `POSTGRES_PORT` | `5432` | Postgres port |
-| `POSTGRES_DB` | `legal_rag` | Database name |
+| `POSTGRES_HOST` | `localhost` | |
+| `POSTGRES_PORT` | `5432` | |
+| `POSTGRES_DB` | `legal_rag` | |
 | `POSTGRES_USER` | `postgres` | |
 | `POSTGRES_PASSWORD` | `postgres` | |
-| `REDIS_URL` | `redis://localhost:6379` | Redis URL for LangGraph checkpointer |
-| `COURTLISTENER_API_KEY` | `""` | Optional; increases rate limits |
-| `CONGRESS_API_KEY` | `""` | Optional; defaults to `DEMO_KEY` |
-| `CLAUDE_MODEL` | `claude-sonnet-4-20250514` | Anthropic model ID |
+| `QDRANT_HOST` | `localhost` | Qdrant host |
+| `QDRANT_PORT` | `6333` | Qdrant gRPC/HTTP port |
+| `QDRANT_COLLECTION` | `legal_chunks` | Collection name |
+| `REDIS_URL` | `redis://localhost:6379` | |
+| `COURTLISTENER_API_KEY` | `""` | Optional — increases rate limits |
+| `CONGRESS_API_KEY` | `""` | Optional — defaults to `DEMO_KEY` |
+| `CLAUDE_MODEL` | `claude-sonnet-4-5` | Anthropic model ID |
 | `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
+| `EMBEDDING_DIM` | `1536` | Embedding dimensions |
 | `TOP_K_RETRIEVAL` | `8` | Chunks retrieved per search term |
-| `RERANK_TOP_K` | `4` | Chunks passed to the generate node after merging |
+| `RERANK_TOP_K` | `4` | Chunks passed to generate node after merging |
 | `LANGCHAIN_TRACING_V2` | `false` | Enable LangSmith tracing |
 
 ---
@@ -224,9 +250,9 @@ All configuration is managed via environment variables (`.env` file or shell). S
 
 | Source | Format | Coverage |
 |---|---|---|
-| US Constitution | Plain text | Full text with amendments |
-| US Code | PDF (54 titles) | 119th Congress, as of Supplement 73 |
-| CFR | eCFR API (live) | All titles, current version |
+| US Constitution | Plain text | Full text + all 27 amendments |
+| US Code | PDF (54 titles) | 119th Congress, Supplement 73 |
+| CFR | eCFR API (live) | All 50 titles, current version |
 | Case law | CourtListener API (live) | Federal + state court opinions |
 | Legislation | Congress.gov API (live) | Bills, statutes, amendments |
 
@@ -235,44 +261,61 @@ All configuration is managed via environment variables (`.env` file or shell). S
 ## Ingestion Pipeline
 
 ```
-PDF / text / API
-      │
-      ▼
-  Parser          ← extracts raw text per source type
-      │
-      ▼
-  Legal chunker   ← recursive structural split (article → section → paragraph → sentence)
-      │             max 2000 chars per chunk, 200-char overlap, parent_id for hierarchy
-      ▼
-  Embedder        ← OpenAI text-embedding-3-small, 3 parallel workers, 200-chunk batches
-      │             exponential backoff on rate limit errors
-      ▼
-  pgvector        ← bulk INSERT … ON CONFLICT DO UPDATE
+PDF / plain text / API response
+          │
+          ▼
+      Parser              ← extracts clean text per source type
+          │
+          ▼
+      Legal chunker        ← recursive structural split
+          │                   Article → Section → Paragraph → Sentence
+          │                   max 2,000 chars, 200-char overlap at paragraph level
+          │                   parent_id preserved for hierarchy-aware retrieval
+          ▼
+      Embedder             ← OpenAI text-embedding-3-small
+          │                   3 parallel workers, 200-chunk batches
+          │                   exponential backoff on rate limits
+          ▼
+      Qdrant               ← upsert with HNSW auto-indexing
+                              cosine distance, 1536-dim
 ```
 
 ---
 
-## Development
+## Benchmark: v1 (Legal Chunker) vs v2 (LlamaIndex)
 
-### Running tests
+`RAG_v2/` contains a parallel ingestion pipeline built with LlamaIndex's `IngestionPipeline` + `SentenceSplitter` as a benchmark baseline. Results on the US Constitution corpus:
+
+| Metric | v1 — Legal chunker + Qdrant | v2 — LlamaIndex SentenceSplitter |
+|---|---|---|
+| Chunks produced | 121 | 23 |
+| Avg chunk size | 496 chars | 1,980 chars |
+| Retrieval latency | **10.8ms** | 44ms |
+| Relevant results (top-3) | **3 / 3** | 0 / 3 |
+
+**Why v2 fails:** `SentenceSplitter` packs 4–5 amendments per chunk. Each chunk's embedding vector becomes a centroid of multiple unrelated legal concepts, making targeted retrieval impossible. v1's chunker preserves amendment boundaries — each amendment is its own isolated vector.
+
+Run the benchmark:
+
+```bash
+python RAG_v2/benchmark.py --skip-ingestion
+python RAG_v2/benchmark.py --query "What is the First Amendment?"
+```
+
+---
+
+## Testing
 
 ```bash
 pytest tests/ -v
 ```
 
-Tests require a running Postgres + Redis instance (provided by `docker compose up -d postgres redis`). The CI workflow spins these up as GitHub Actions service containers.
+20 tests, zero external dependencies (no API calls, no DB):
 
-### Linting
-
-```bash
-ruff check .
-```
-
-### Running the full stack locally
-
-```bash
-docker compose up          # starts postgres, redis, and the API container
-```
+| Suite | Tests | Coverage |
+|---|---|---|
+| `test_chunker.py` | 11 | Chunker output, citation format, `version_hash` determinism, field validation |
+| `test_graph_routing.py` | 9 | Router logic, edge cases, merge deduplication, `rerank_top_k` trimming |
 
 ---
 
@@ -280,21 +323,36 @@ docker compose up          # starts postgres, redis, and the API container
 
 The CI/CD pipeline (`.github/workflows/ci.yml`) runs on every push to `main`:
 
-1. Runs the test suite against live Postgres + Redis service containers
-2. Builds and pushes a Docker image to Amazon ECR
-3. Forces a new ECS Fargate deployment (`aws ecs update-service --force-new-deployment`)
+1. Spins up Postgres + Redis as GitHub Actions service containers
+2. Runs the full test suite
+3. Builds and pushes a Docker image to Amazon ECR
+4. Forces a rolling ECS Fargate redeployment
 
-AWS infrastructure is defined in [infra/aws_stack.py](infra/aws_stack.py) using AWS CDK (ECS Fargate + RDS + ElastiCache).
+AWS infrastructure is defined in [infra/aws_stack.py](infra/aws_stack.py) using AWS CDK — ECS Fargate, RDS Postgres, ElastiCache Redis. Qdrant runs as a sidecar ECS container with an EFS volume for persistence.
+
+### Migrating vector data to AWS
+
+```bash
+# Option A — re-ingest against RDS + Qdrant on AWS (simplest)
+POSTGRES_HOST=<rds-endpoint> QDRANT_HOST=<qdrant-endpoint> \
+  python scripts/ingest_full.py --source all
+
+# Option B — dump and restore Postgres metadata only
+pg_dump -h localhost -U postgres -d legal_rag -Fc -f legal_rag.dump
+pg_restore -h <rds-endpoint> -U postgres -d legal_rag legal_rag.dump
+# Then snapshot and restore the Qdrant EFS volume for vector data
+```
 
 ---
 
 ## Roadmap
 
-- [ ] Cohere Rerank API integration in `merge_context_node`
+- [ ] Cohere Rerank API in `merge_context_node`
 - [ ] Streaming responses via SSE
+- [ ] Hybrid search — BM25 + dense vector (Qdrant native)
 - [ ] State-level law support
-- [ ] HNSW index auto-rebuild after ingestion
 - [ ] Evaluation harness (RAGAS)
+- [ ] HNSW parameter tuning (`m`, `ef`) at production scale
 
 ---
 
