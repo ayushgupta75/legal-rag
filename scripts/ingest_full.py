@@ -230,7 +230,17 @@ def main():
         action="store_true",
         help="Skip rebuilding the HNSW index at the end (use when more titles still to come)",
     )
+    parser.add_argument(
+        "--rebuild-index",
+        action="store_true",
+        help="Only rebuild the HNSW index — skip all ingestion",
+    )
     args = parser.parse_args()
+
+    if args.rebuild_index:
+        init_db()
+        rebuild_hnsw_index()
+        return
 
     logger.info("=== Initialising database ===")
     init_db()

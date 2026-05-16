@@ -35,6 +35,11 @@ langgraph-checkpoint-redis>=0.0.1
 # Observability
 langsmith>=0.1.0
 
+# LlamaIndex (RAG v2)
+llama-index-core>=0.14.0
+llama-index-embeddings-openai>=0.6.0
+llama-index-vector-stores-postgres>=0.8.0
+
 # Dev / test
 pytest>=8.2.0
 pytest-asyncio>=0.23.0
