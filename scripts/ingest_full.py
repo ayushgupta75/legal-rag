@@ -18,7 +18,6 @@ import logging
 from pathlib import Path
 sys.path.insert(0, ".")
 
-from ingestion.db import init_db
 from ingestion.chunkers.legal_chunker import (
     chunk_constitution, chunk_uscode, chunk_cfr
 )
@@ -206,9 +205,6 @@ def main():
         help="Title numbers to ingest (for uscode or cfr)",
     )
     args = parser.parse_args()
-
-    logger.info("=== Initialising database ===")
-    init_db()
 
     if args.source in ("all", "constitution"):
         ingest_constitution()

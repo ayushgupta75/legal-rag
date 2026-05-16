@@ -6,16 +6,6 @@ class Settings(BaseSettings):
     # Anthropic
     anthropic_api_key: str
 
-    # OpenAI (embeddings)
-    openai_api_key: str
-
-    # Postgres
-    postgres_host: str = "localhost"
-    postgres_port: int = 5432
-    postgres_db: str = "legal_rag"
-    postgres_user: str = "postgres"
-    postgres_password: str = "postgres"
-
     # Redis
     redis_url: str = "redis://localhost:6379"
 
@@ -39,17 +29,10 @@ class Settings(BaseSettings):
 
     # Model config
     claude_model: str = "claude-sonnet-4-20250514"
-    embedding_model: str = "text-embedding-3-small"
-    embedding_dim: int = 1536
+    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_dim: int = 384
     top_k_retrieval: int = 8
     rerank_top_k: int = 4
-
-    @property
-    def postgres_dsn(self) -> str:
-        return (
-            f"postgresql+psycopg2://{self.postgres_user}:{self.postgres_password}"
-            f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        )
 
     class Config:
         env_file = ".env"

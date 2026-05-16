@@ -40,7 +40,7 @@ def search_courtlistener(query: str, max_results: int = 4) -> list[dict]:
         results.append({
             "id": f"cl_{r.get('id', '')}",
             "source": "caselaw",
-            "citation": r.get("citation", [r.get("caseName", "Unknown")])[0] if isinstance(r.get("citation"), list) else r.get("caseName", "Unknown"),
+            "citation": r["citation"][0] if isinstance(r.get("citation"), list) and r["citation"] else r.get("caseName", "Unknown"),
             "title": r.get("caseName", ""),
             "section": r.get("court", ""),
             "text": r.get("snippet", r.get("text", ""))[:2000],

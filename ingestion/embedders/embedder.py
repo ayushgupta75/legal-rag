@@ -1,15 +1,15 @@
 """
 Embedder: converts LegalChunkData → vector embeddings → Qdrant upsert.
-Uses parallel OpenAI calls for maximum throughput.
+Uses sentence-transformers (all-MiniLM-L6-v2) locally — no API calls.
 """
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from openai import OpenAI, RateLimitError
+from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance, VectorParams, PointStruct,
-    Filter, FieldCondition, MatchValue, Query,
+    Filter, FieldCondition, MatchValue,
 )
 from ingestion.chunkers.legal_chunker import LegalChunkData
 from config import get_settings
@@ -17,12 +17,11 @@ from config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-openai_client = OpenAI(api_key=settings.openai_api_key)
+_model = SentenceTransformer(settings.embedding_model)
 qdrant = QdrantClient(host=settings.qdrant_host, port=settings.qdrant_port)
 
-BATCH_SIZE   = 200
-MAX_WORKERS  = 3
-SUBMIT_DELAY = 0.5
+BATCH_SIZE   = 64
+MAX_WORKERS  = 1
 
 
 def _ensure_collection():
@@ -40,26 +39,14 @@ def _ensure_collection():
 
 
 def embed_texts(texts: list[str]) -> list[list[float]]:
-    """Call OpenAI embeddings API and return list of float vectors."""
-    response = openai_client.embeddings.create(
-        model=settings.embedding_model,
-        input=texts,
-        encoding_format="float",
-    )
-    return [item.embedding for item in response.data]
+    """Embed texts locally using sentence-transformers."""
+    return _model.encode(texts, normalize_embeddings=True).tolist()
 
 
 def _embed_batch(batch_idx: int, batch: list[LegalChunkData]) -> tuple[int, list, list]:
-    """Embed one batch with exponential backoff on rate limit errors."""
-    for attempt in range(6):
-        try:
-            vectors = embed_texts([c.text for c in batch])
-            return batch_idx, batch, vectors
-        except RateLimitError:
-            wait = 2 ** attempt
-            logger.warning(f"Rate limit on batch {batch_idx + 1}, retrying in {wait}s…")
-            time.sleep(wait)
-    raise RuntimeError(f"Batch {batch_idx + 1} failed after 6 retries")
+    """Embed one batch."""
+    vectors = embed_texts([c.text for c in batch])
+    return batch_idx, batch, vectors
 
 
 def upsert_chunks(chunks: list[LegalChunkData]) -> int:
@@ -84,7 +71,6 @@ def upsert_chunks(chunks: list[LegalChunkData]) -> int:
         futures = {}
         for idx, batch in batches:
             futures[executor.submit(_embed_batch, idx, batch)] = idx
-            time.sleep(SUBMIT_DELAY)
         for future in as_completed(futures):
             batch_idx, batch, vectors = future.result()
             results[batch_idx] = (batch, vectors)
@@ -137,7 +123,16 @@ def similarity_search(
     source_filter: str | None = None,
 ) -> list[dict]:
     """Embed a query and return top-K similar chunks from Qdrant."""
-    query_vector = embed_texts([query_text])[0]
+    return multi_similarity_search([query_text], top_k=top_k, source_filter=source_filter)
+
+
+def multi_similarity_search(
+    query_texts: list[str],
+    top_k: int = 8,
+    source_filter: str | None = None,
+) -> list[dict]:
+    """Embed all queries in one batch, search Qdrant in parallel, deduplicate."""
+    vectors = embed_texts(query_texts)
 
     search_filter = None
     if source_filter:
@@ -145,23 +140,31 @@ def similarity_search(
             must=[FieldCondition(key="source", match=MatchValue(value=source_filter))]
         )
 
-    response = qdrant.query_points(
-        collection_name=settings.qdrant_collection,
-        query=query_vector,
-        limit=top_k,
-        query_filter=search_filter,
-        with_payload=True,
-    )
+    def _search(vector):
+        return qdrant.query_points(
+            collection_name=settings.qdrant_collection,
+            query=vector,
+            limit=top_k,
+            query_filter=search_filter,
+            with_payload=True,
+        ).points
 
-    return [
-        {
-            "id":       r.id,
-            "source":   r.payload.get("source"),
-            "citation": r.payload.get("citation"),
-            "section":  r.payload.get("section"),
-            "title":    r.payload.get("title"),
-            "text":     r.payload.get("text"),
-            "score":    r.score,
-        }
-        for r in response.points
-    ]
+    with ThreadPoolExecutor(max_workers=len(vectors)) as executor:
+        all_results = list(executor.map(_search, vectors))
+
+    seen_ids = set()
+    merged = []
+    for points in all_results:
+        for r in points:
+            if r.id not in seen_ids:
+                seen_ids.add(r.id)
+                merged.append({
+                    "id":       r.id,
+                    "source":   r.payload.get("source"),
+                    "citation": r.payload.get("citation"),
+                    "section":  r.payload.get("section"),
+                    "title":    r.payload.get("title"),
+                    "text":     r.payload.get("text"),
+                    "score":    r.score,
+                })
+    return merged

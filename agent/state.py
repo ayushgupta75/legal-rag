@@ -18,7 +18,7 @@ class AgentState(TypedDict):
     route: Literal["vector", "live_tools", "agent"]
 
     # Retrieved context
-    vector_chunks: list[dict]       # from pgvector
+    vector_chunks: list[dict]       # from Qdrant
     live_results: list[dict]        # from CourtListener / Congress API / web
     merged_context: list[dict]      # after dedup + rerank
 

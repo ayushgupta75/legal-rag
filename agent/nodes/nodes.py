@@ -7,7 +7,7 @@ from anthropic import Anthropic
 from agent.state import AgentState
 from agent.tools.live_tools import search_courtlistener, search_congress, search_ecfr
 from agent.prompts.legal_prompts import QUERY_ANALYSIS_PROMPT, GENERATE_PROMPT
-from ingestion.embedders.embedder import similarity_search
+from ingestion.embedders.embedder import similarity_search, multi_similarity_search
 from config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -70,16 +70,10 @@ def get_route(state: AgentState) -> str:
 # ── Node 3a: Vector Retrieve ──────────────────────────────────────────────────
 
 def vector_retrieve_node(state: AgentState) -> dict:
-    """Run similarity search against pgvector using expanded query terms."""
-    all_chunks = []
-    seen_ids = set()
-    for term in state.get("expanded_terms", [state["query"]]):
-        chunks = similarity_search(term, top_k=settings.top_k_retrieval)
-        for c in chunks:
-            if c["id"] not in seen_ids:
-                all_chunks.append(c)
-                seen_ids.add(c["id"])
-    return {"vector_chunks": all_chunks}
+    """Embed all expanded terms in one batch, search Qdrant in parallel."""
+    terms = state.get("expanded_terms") or [state["query"]]
+    chunks = multi_similarity_search(terms, top_k=settings.top_k_retrieval)
+    return {"vector_chunks": chunks}
 
 
 # ── Node 3b: Live Tools ───────────────────────────────────────────────────────
@@ -129,9 +123,8 @@ def generate_node(state: AgentState) -> dict:
     """
     context_blocks = []
     for i, chunk in enumerate(state.get("merged_context", []), 1):
-        context_blocks.append(
-            f"[{i}] {chunk.get('citation', 'Unknown')}\n{chunk.get('text', '')}"
-        )
+        text = chunk.get('text', '')[:800]  # trim to 800 chars per chunk
+        context_blocks.append(f"[{i}] {chunk.get('citation', 'Unknown')}\n{text}")
     context_str = "\n\n---\n\n".join(context_blocks)
 
     prompt = GENERATE_PROMPT.format(
@@ -141,7 +134,7 @@ def generate_node(state: AgentState) -> dict:
 
     response = anthropic.messages.create(
         model=settings.claude_model,
-        max_tokens=1500,
+        max_tokens=800,
         messages=[{"role": "user", "content": prompt}],
     )
 
@@ -231,7 +224,7 @@ def react_agent_node(state: AgentState) -> dict:
             return {
                 "answer": answer,
                 "live_results": all_live_results,
-                "messages": messages + [{"role": "assistant", "content": response.content}],
+                "messages": messages + [{"role": "assistant", "content": answer}],
             }
 
         # Process tool calls
@@ -243,13 +236,24 @@ def react_agent_node(state: AgentState) -> dict:
             if tool_fn:
                 results = tool_fn(block.input.get("query", ""))
                 all_live_results.extend(results)
+                content = str(results[:3]) if results else "No results found."
                 tool_results.append({
                     "type": "tool_result",
                     "tool_use_id": block.id,
-                    "content": str(results[:3]),  # trim for context window
+                    "content": content,
                 })
 
-        messages.append({"role": "assistant", "content": response.content})
+        serialized = [
+            {"type": b.type, "text": b.text} if b.type == "text"
+            else {"type": b.type, "id": b.id, "name": b.name, "input": b.input}
+            for b in response.content
+        ]
+        if not tool_results:
+            # Claude signalled tool_use but produced no callable tools — treat as final
+            answer = next((b.text for b in response.content if hasattr(b, "text")), "")
+            return {"answer": answer, "live_results": all_live_results, "messages": messages}
+
+        messages.append({"role": "assistant", "content": serialized})
         messages.append({"role": "user", "content": tool_results})
 
     # Fallback if max rounds hit

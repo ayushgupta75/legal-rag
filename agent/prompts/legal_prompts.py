@@ -5,11 +5,13 @@ TYPE: simple|complex|multi_source
 TERMS: term1, term2, term3
 
 Rules:
-- simple: single statute lookup, constitutional clause, one clear legal topic
-- complex: requires multi-step reasoning, comparing statutes, interpreting case law
-- multi_source: explicitly needs both case law AND legislation AND regulations
+- simple: ANY question answerable from statutes or the constitution — including questions that span multiple titles or cross-reference definitions. This is the DEFAULT type.
+- multi_source: ONLY when the question explicitly asks for both court case opinions AND regulations AND statutes together.
+- complex: ONLY when the question requires tracing a chain of court rulings over time or comparing contradictory statutes. Use sparingly.
 
-TERMS: expand the query into 2-4 specific legal search terms (include formal legal names, section numbers, latin terms if relevant).
+When in doubt, use simple.
+
+TERMS: expand the query into 3-5 specific legal search terms. Include: the exact U.S.C. section number if known (e.g. "1 U.S.C. § 1"), the legal concept name, and related statutory terms. Be specific — prefer "1 U.S.C. § 1 definition person" over just "person".
 
 Query: {query}"""
 
