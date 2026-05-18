@@ -248,13 +248,9 @@ def react_agent_node(state: AgentState) -> dict:
             else {"type": b.type, "id": b.id, "name": b.name, "input": b.input}
             for b in response.content
         ]
-        if not tool_results:
-            # Claude signalled tool_use but produced no callable tools — treat as final
-            answer = next((b.text for b in response.content if hasattr(b, "text")), "")
-            return {"answer": answer, "live_results": all_live_results, "messages": messages}
-
         messages.append({"role": "assistant", "content": serialized})
-        messages.append({"role": "user", "content": tool_results})
+        if tool_results:
+            messages.append({"role": "user", "content": tool_results})
 
     # Fallback if max rounds hit
     return {"answer": "Could not resolve query within agent step limit.", "messages": messages}

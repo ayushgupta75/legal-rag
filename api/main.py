@@ -6,6 +6,8 @@ import time
 import logging
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from agent.graph import get_graph
 
@@ -26,6 +28,12 @@ app.add_middleware(
 )
 
 graph = get_graph()
+
+app.mount("/static", StaticFiles(directory="ui"), name="static")
+
+@app.get("/")
+def serve_ui():
+    return FileResponse("ui/index.html")
 
 
 class QueryRequest(BaseModel):

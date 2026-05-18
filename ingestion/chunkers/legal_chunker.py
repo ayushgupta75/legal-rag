@@ -7,7 +7,6 @@ exceeds MAX_CHARS.  Every chunk carries full citation metadata and a parent_id
 so callers can do parent-doc retrieval.
 """
 import re
-import uuid
 import hashlib
 
 from dataclasses import dataclass, field
@@ -121,7 +120,7 @@ def chunk_document(
     top_chunks = _recursive_split(raw_text)
 
     for top_text in top_chunks:
-        top_id = str(uuid.uuid4())
+        top_id = hashlib.md5(top_text.strip().encode()).hexdigest()
         top_header = _first_line(top_text)
         top_citation = f"{citation_prefix} {top_header}".strip()
 
@@ -148,7 +147,7 @@ def chunk_document(
                     continue
                 child_header = _first_line(child_text)
                 yield LegalChunkData(
-                    id=str(uuid.uuid4()),
+                    id=hashlib.md5(child_text.strip().encode()).hexdigest(),
                     source=source,
                     title=title,
                     section=child_header or top_header,
