@@ -27,3 +27,4 @@ data
 
 # Docker
 *.log
+qdrant_backup.tar.gz
