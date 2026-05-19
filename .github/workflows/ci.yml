@@ -6,28 +6,11 @@ on:
   pull_request:
     branches: [main]
 
-env:
-  AWS_REGION: us-east-1
-  ECR_REPOSITORY: legal-rag
-  ECS_CLUSTER: LegalRagCluster
-  ECS_SERVICE: LegalRagService
-
 jobs:
   test:
     name: Run tests
     runs-on: ubuntu-latest
     services:
-      postgres:
-        image: pgvector/pgvector:pg16
-        env:
-          POSTGRES_DB: legal_rag_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-retries 5
       redis:
         image: redis:7-alpine
         ports: ["6379:6379"]
@@ -37,7 +20,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: "3.11"
           cache: "pip"
 
       - name: Install dependencies
@@ -49,50 +32,35 @@ jobs:
       - name: Run tests
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          POSTGRES_HOST: localhost
-          POSTGRES_DB: legal_rag_test
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
           REDIS_URL: redis://localhost:6379
+          QDRANT_HOST: localhost
+          QDRANT_PORT: 6333
+          QDRANT_COLLECTION: legal_chunks
+          EMBEDDING_MODEL: all-MiniLM-L6-v2
+          EMBEDDING_DIM: "384"
+          CLAUDE_MODEL: claude-sonnet-4-6
+          TOP_K_RETRIEVAL: "8"
+          RERANK_TOP_K: "4"
         run: pytest tests/ -v --tb=short
 
-  build-and-deploy:
-    name: Build → ECR → ECS
+  deploy:
+    name: Deploy to EC2
     runs-on: ubuntu-latest
     needs: test
     if: github.ref == 'refs/heads/main'
 
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Login to Amazon ECR
-        id: login-ecr
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, tag, and push image
-        id: build-image
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          IMAGE_TAG: ${{ github.sha }}
-        run: |
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
-          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG \
-                     $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
-          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
-          echo "image=$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
-
-      - name: Force ECS service redeployment
-        run: |
-          aws ecs update-service \
-            --cluster $ECS_CLUSTER \
-            --service $ECS_SERVICE \
-            --force-new-deployment
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            cd /home/ec2-user/legal-rag
+            git pull origin main
+            source .venv/bin/activate
+            pip install -r requirements.txt -q
+            sudo fuser -k 8000/tcp || true
+            nohup uvicorn api.main:app --host 0.0.0.0 --port 8000 --timeout-keep-alive 120 > uvicorn.log 2>&1 &
+            echo "Deployed successfully"
