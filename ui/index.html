@@ -533,6 +533,7 @@
 
 <script>
   const API_BASE = "";
+  const API_KEY = ""; // set this if API_KEY is configured on the server
   let threadId = null;
   let isEmpty = true;
 
@@ -696,7 +697,7 @@
     try {
       const res = await fetch(`${API_BASE}/query`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...(API_KEY && { "X-API-Key": API_KEY }) },
         body: JSON.stringify({ query, thread_id: threadId }),
       });
 

@@ -3,8 +3,10 @@ FastAPI application — exposes the LangGraph agent as a REST API.
 """
 import uuid
 import time
+import os
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Security, Depends
+from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
@@ -31,6 +33,18 @@ graph = get_graph()
 
 app.mount("/static", StaticFiles(directory="ui"), name="static")
 
+# ── API Key security ──────────────────────────────────────────────────────────
+
+API_KEY = os.getenv("API_KEY", "")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+def verify_api_key(key: str = Security(api_key_header)):
+    if API_KEY and key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    return key
+
+# ── Routes ────────────────────────────────────────────────────────────────────
+
 @app.get("/")
 def serve_ui():
     return FileResponse("ui/index.html")
@@ -38,7 +52,7 @@ def serve_ui():
 
 class QueryRequest(BaseModel):
     query: str
-    thread_id: str | None = None     # pass the same thread_id to continue a conversation
+    thread_id: str | None = None
 
 
 class QueryResponse(BaseModel):
@@ -49,7 +63,7 @@ class QueryResponse(BaseModel):
     latency_ms: int
 
 
-@app.post("/query", response_model=QueryResponse)
+@app.post("/query", response_model=QueryResponse, dependencies=[Depends(verify_api_key)])
 async def query_legal(req: QueryRequest):
     thread_id = req.thread_id or str(uuid.uuid4())
     config = {"configurable": {"thread_id": thread_id}}
