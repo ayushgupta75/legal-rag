@@ -2,7 +2,6 @@
 tests/test_chunker.py — Unit tests for the legal chunker.
 Run: pytest tests/
 """
-import pytest
 import sys
 sys.path.insert(0, ".")
 

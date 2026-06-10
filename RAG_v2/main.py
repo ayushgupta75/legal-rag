@@ -18,7 +18,7 @@ import logging
 sys.path.insert(0, ".")
 
 from sqlalchemy import text
-from llama_index.core import Document, Settings
+from llama_index.core import Document
 from llama_index.core.ingestion import IngestionPipeline
 from llama_index.core.node_parser import SentenceSplitter
 from llama_index.embeddings.openai import OpenAIEmbedding

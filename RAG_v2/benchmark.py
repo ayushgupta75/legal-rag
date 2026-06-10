@@ -22,7 +22,7 @@ from openai import OpenAI
 from ingestion.db import SessionLocal, LegalChunk, engine, init_db
 from ingestion.chunkers.legal_chunker import chunk_constitution
 from ingestion.embedders.embedder import upsert_chunks
-from RAG_v2.main import ingest_constitution as v2_ingest, get_vector_store, get_embed_model, DB_TABLE_NAME as TABLE_NAME
+from RAG_v2.main import ingest_constitution as v2_ingest, get_vector_store, DB_TABLE_NAME as TABLE_NAME
 from config import get_settings
 
 logging.basicConfig(level=logging.WARNING)   # suppress INFO noise during benchmark
@@ -139,9 +139,7 @@ def retrieval_quality(query: str, top_k: int = 3):
         db.close()
 
     # v2 — LlamaIndex VectorStore retriever
-    from llama_index.core import VectorStoreIndex, StorageContext
     from llama_index.core.vector_stores import VectorStoreQuery
-    from llama_index.core.schema import QueryBundle
 
     vector_store = get_vector_store()
     t0 = time.time()

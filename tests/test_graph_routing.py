@@ -2,7 +2,6 @@
 tests/test_graph_routing.py — Tests for LangGraph node logic (no real API calls).
 Uses monkeypatching to avoid hitting Anthropic / OpenAI / pgvector.
 """
-import pytest
 import sys
 sys.path.insert(0, ".")
 

@@ -4,7 +4,7 @@ Run: python -m ingestion.db  to initialise the schema.
 """
 from sqlalchemy import (
     create_engine, Column, String, Text, DateTime,
-    Integer, JSON, Index, text
+    Integer, JSON, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker
 from pgvector.sqlalchemy import Vector

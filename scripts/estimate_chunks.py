@@ -149,7 +149,7 @@ def main():
 
     if len(title_results) > 1:
         top5 = sorted(title_results, key=lambda x: x[2], reverse=True)[:5]
-        print(f"\n  Top 5 largest titles:")
+        print("\n  Top 5 largest titles:")
         for num, name, count, avg in top5:
             pct = count * 100 // grand_total
             print(f"    Title {num:<2} {name:<35} {count:>8,}  ({pct}%)")
