@@ -8,8 +8,6 @@ import logging
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from agent.graph import get_graph
 
@@ -31,8 +29,6 @@ app.add_middleware(
 
 graph = get_graph()
 
-app.mount("/static", StaticFiles(directory="ui"), name="static")
-
 # ── API Key security ──────────────────────────────────────────────────────────
 
 API_KEY = os.getenv("API_KEY", "")
@@ -44,11 +40,6 @@ def verify_api_key(key: str = Security(api_key_header)):
     return key
 
 # ── Routes ────────────────────────────────────────────────────────────────────
-
-@app.get("/")
-def serve_ui():
-    return FileResponse("ui/index.html")
-
 
 class QueryRequest(BaseModel):
     query: str
