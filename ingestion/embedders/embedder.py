@@ -2,6 +2,8 @@
 Embedder: converts LegalChunkData → vector embeddings → Qdrant upsert.
 Uses sentence-transformers (all-MiniLM-L6-v2) locally — no API calls.
 """
+from __future__ import annotations
+
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed

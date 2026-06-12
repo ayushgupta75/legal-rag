@@ -8,6 +8,8 @@ Usage:
     from ingestion.parsers.cfr_parser import fetch_cfr_title
     sections = fetch_cfr_title(title=47, date="2024-01-01")
 """
+from __future__ import annotations
+
 import httpx
 import logging
 from xml.etree import ElementTree as ET
