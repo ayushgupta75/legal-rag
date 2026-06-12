@@ -53,13 +53,13 @@ Built with [LangGraph](https://github.com/langchain-ai/langgraph). All nodes sha
 | Orchestration | LangGraph |
 | LLM | Claude (`claude-sonnet-4-5`) via Anthropic API |
 | Vector store | Qdrant (HNSW, auto-indexed on upsert) |
-| Embeddings | OpenAI `text-embedding-3-small` (1536-dim) |
+| Embeddings | `sentence-transformers/all-MiniLM-L6-v2` (384-dim, local) |
 | Metadata store | PostgreSQL 16 |
 | Live legal APIs | CourtListener, Congress.gov, eCFR |
 | API server | FastAPI + Uvicorn |
 | State cache | Redis (LangGraph checkpointer) |
-| Infra | AWS ECS Fargate + RDS + ElastiCache (CDK) |
-| CI/CD | GitHub Actions → ECR → ECS |
+| Infra | AWS EC2 |
+| CI/CD | GitHub Actions → SSH deploy to EC2 |
 
 ---
 
@@ -82,7 +82,7 @@ legal-rag/
 │   ├── chunkers/
 │   │   └── legal_chunker.py  # Recursive structural chunker — Article → Section → Clause
 │   ├── embedders/
-│   │   └── embedder.py       # Parallelized OpenAI embedding + Qdrant upsert
+│   │   └── embedder.py       # sentence-transformers embedding + Qdrant upsert
 │   └── parsers/
 │       ├── uscode_parser.py
 │       └── cfr_parser.py
@@ -118,7 +118,6 @@ legal-rag/
 - Python 3.12+
 - Docker + Docker Compose
 - Anthropic API key
-- OpenAI API key (embeddings)
 
 ### 1. Clone and configure
 
@@ -126,17 +125,16 @@ legal-rag/
 git clone https://github.com/your-org/legal-rag.git
 cd legal-rag
 cp .env.example .env
-# Fill in ANTHROPIC_API_KEY and OPENAI_API_KEY at minimum
+# Fill in ANTHROPIC_API_KEY at minimum
 ```
 
 ### 2. Start infrastructure
 
 ```bash
-docker compose up -d postgres redis qdrant
+docker compose up -d redis qdrant
 ```
 
 This starts:
-- **PostgreSQL 16** on `localhost:5432` — metadata + query logs
 - **Redis 7** on `localhost:6379` — LangGraph conversation checkpointer
 - **Qdrant** on `localhost:6333` — vector store (HNSW auto-managed)
 
@@ -225,21 +223,15 @@ All settings are read from environment variables or a `.env` file. See [config.p
 | Variable | Default | Description |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | — | **Required.** Anthropic API key |
-| `OPENAI_API_KEY` | — | **Required.** Used for embeddings |
-| `POSTGRES_HOST` | `localhost` | |
-| `POSTGRES_PORT` | `5432` | |
-| `POSTGRES_DB` | `legal_rag` | |
-| `POSTGRES_USER` | `postgres` | |
-| `POSTGRES_PASSWORD` | `postgres` | |
 | `QDRANT_HOST` | `localhost` | Qdrant host |
 | `QDRANT_PORT` | `6333` | Qdrant gRPC/HTTP port |
 | `QDRANT_COLLECTION` | `legal_chunks` | Collection name |
 | `REDIS_URL` | `redis://localhost:6379` | |
 | `COURTLISTENER_API_KEY` | `""` | Optional — increases rate limits |
 | `CONGRESS_API_KEY` | `""` | Optional — defaults to `DEMO_KEY` |
-| `CLAUDE_MODEL` | `claude-sonnet-4-5` | Anthropic model ID |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
-| `EMBEDDING_DIM` | `1536` | Embedding dimensions |
+| `CLAUDE_MODEL` | `claude-sonnet-4-20250514` | Anthropic model ID |
+| `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Local sentence-transformers model |
+| `EMBEDDING_DIM` | `384` | Must match the embedding model |
 | `TOP_K_RETRIEVAL` | `8` | Chunks retrieved per search term |
 | `RERANK_TOP_K` | `4` | Chunks passed to generate node after merging |
 | `LANGCHAIN_TRACING_V2` | `false` | Enable LangSmith tracing |
@@ -272,12 +264,11 @@ PDF / plain text / API response
           │                   max 2,000 chars, 200-char overlap at paragraph level
           │                   parent_id preserved for hierarchy-aware retrieval
           ▼
-      Embedder             ← OpenAI text-embedding-3-small
-          │                   3 parallel workers, 200-chunk batches
-          │                   exponential backoff on rate limits
+      Embedder             ← sentence-transformers/all-MiniLM-L6-v2 (local, no API)
+          │                   64-chunk batches, 1 worker
           ▼
       Qdrant               ← upsert with HNSW auto-indexing
-                              cosine distance, 1536-dim
+                              cosine distance, 384-dim
 ```
 
 ---
@@ -323,25 +314,11 @@ pytest tests/ -v
 
 The CI/CD pipeline (`.github/workflows/ci.yml`) runs on every push to `main`:
 
-1. Spins up Postgres + Redis as GitHub Actions service containers
-2. Runs the full test suite
-3. Builds and pushes a Docker image to Amazon ECR
-4. Forces a rolling ECS Fargate redeployment
+1. Spins up Redis as a GitHub Actions service container
+2. Runs lint (`ruff`) and the full test suite
+3. SSHes into the EC2 instance, pulls the latest code, reinstalls dependencies, and restarts uvicorn
 
-AWS infrastructure is defined in [infra/aws_stack.py](infra/aws_stack.py) using AWS CDK — ECS Fargate, RDS Postgres, ElastiCache Redis. Qdrant runs as a sidecar ECS container with an EFS volume for persistence.
-
-### Migrating vector data to AWS
-
-```bash
-# Option A — re-ingest against RDS + Qdrant on AWS (simplest)
-POSTGRES_HOST=<rds-endpoint> QDRANT_HOST=<qdrant-endpoint> \
-  python scripts/ingest_full.py --source all
-
-# Option B — dump and restore Postgres metadata only
-pg_dump -h localhost -U postgres -d legal_rag -Fc -f legal_rag.dump
-pg_restore -h <rds-endpoint> -U postgres -d legal_rag legal_rag.dump
-# Then snapshot and restore the Qdrant EFS volume for vector data
-```
+The server runs directly on EC2 via uvicorn (no Docker in production). `infra/aws_stack.py` contains an AWS CDK ECS Fargate stack that is not currently active.
 
 ---
 
