@@ -40,7 +40,12 @@ def query_analysis_node(state: AgentState) -> dict:
             expanded_terms = [t.strip() for t in line.split(":", 1)[1].split(",")]
 
     logger.info(f"Query type: {query_type} | Terms: {expanded_terms}")
-    return {"query_type": query_type, "expanded_terms": expanded_terms}
+    return {
+        "query_type": query_type,
+        "expanded_terms": expanded_terms,
+        "total_input_tokens": response.usage.input_tokens,
+        "total_output_tokens": response.usage.output_tokens,
+    }
 
 
 # ── Node 2: Router (conditional edge logic) ───────────────────────────────────
@@ -141,7 +146,12 @@ def generate_node(state: AgentState) -> dict:
     answer = response.content[0].text.strip()
     citations = [c.get("citation", "") for c in state.get("merged_context", [])]
 
-    return {"answer": answer, "citations": citations}
+    return {
+        "answer": answer,
+        "citations": citations,
+        "total_input_tokens": response.usage.input_tokens,
+        "total_output_tokens": response.usage.output_tokens,
+    }
 
 
 # ── Node 6: ReAct Agent (complex queries) ────────────────────────────────────
@@ -203,6 +213,8 @@ def react_agent_node(state: AgentState) -> dict:
         messages = [{"role": "user", "content": state["query"]}]
 
     all_live_results = []
+    total_input = 0
+    total_output = 0
 
     for _ in range(6):  # max 6 tool-call rounds
         response = anthropic.messages.create(
@@ -215,6 +227,8 @@ def react_agent_node(state: AgentState) -> dict:
                 "gather relevant legal information before answering. Always cite sources."
             ),
         )
+        total_input += response.usage.input_tokens
+        total_output += response.usage.output_tokens
 
         # No tool calls → final answer
         if response.stop_reason == "end_turn":
@@ -225,6 +239,8 @@ def react_agent_node(state: AgentState) -> dict:
                 "answer": answer,
                 "live_results": all_live_results,
                 "messages": messages + [{"role": "assistant", "content": answer}],
+                "total_input_tokens": total_input,
+                "total_output_tokens": total_output,
             }
 
         # Process tool calls
@@ -253,4 +269,9 @@ def react_agent_node(state: AgentState) -> dict:
             messages.append({"role": "user", "content": tool_results})
 
     # Fallback if max rounds hit
-    return {"answer": "Could not resolve query within agent step limit.", "messages": messages}
+    return {
+        "answer": "Could not resolve query within agent step limit.",
+        "messages": messages,
+        "total_input_tokens": total_input,
+        "total_output_tokens": total_output,
+    }

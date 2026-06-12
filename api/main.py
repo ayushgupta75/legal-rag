@@ -1,18 +1,59 @@
 """
 FastAPI application — exposes the LangGraph agent as a REST API.
 """
-import uuid
-import time
-import os
+import json
 import logging
-from fastapi import FastAPI, HTTPException, Security, Depends
-from fastapi.security import APIKeyHeader
+import os
+import time
+import uuid
+from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
+
+from fastapi import Depends, FastAPI, HTTPException, Security
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel
+
 from agent.graph import get_graph
+from config import get_settings
 
 logging.basicConfig(level="INFO")
 logger = logging.getLogger(__name__)
+
+# ── Query log (separate from uvicorn/app logs) ────────────────────────────────
+
+os.makedirs("logs", exist_ok=True)
+query_logger = logging.getLogger("query_log")
+query_logger.setLevel(logging.INFO)
+_log_handler = RotatingFileHandler("logs/queries.log", maxBytes=5_000_000, backupCount=3)
+_log_handler.setFormatter(logging.Formatter("%(message)s"))
+query_logger.addHandler(_log_handler)
+query_logger.propagate = False  # don't echo into uvicorn's stdout
+
+# Pricing per million tokens (input, output) — keep in sync with config.py / .env
+_MODEL_PRICING: dict[str, tuple[float, float]] = {
+    "claude-sonnet-4-6": (3.00, 15.00),
+    "claude-sonnet-4-20250514": (3.00, 15.00),
+    "claude-opus-4-8": (5.00, 25.00),
+    "claude-haiku-4-5": (1.00, 5.00),
+}
+
+settings = get_settings()
+graph = get_graph()
+
+# ── API Key security ──────────────────────────────────────────────────────────
+
+API_KEY = os.getenv("API_KEY", "")
+api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+def verify_api_key(key: str = Security(api_key_header)):
+    if API_KEY and key != API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    return key
+
+
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 app = FastAPI(
     title="US Legal RAG API",
@@ -27,19 +68,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-graph = get_graph()
-
-# ── API Key security ──────────────────────────────────────────────────────────
-
-API_KEY = os.getenv("API_KEY", "")
-api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
-
-def verify_api_key(key: str = Security(api_key_header)):
-    if API_KEY and key != API_KEY:
-        raise HTTPException(status_code=401, detail="Invalid or missing API key")
-    return key
-
-# ── Routes ────────────────────────────────────────────────────────────────────
 
 class QueryRequest(BaseModel):
     query: str
@@ -69,10 +97,28 @@ async def query_legal(req: QueryRequest):
                 "live_results": [],
                 "merged_context": [],
                 "expanded_terms": [],
+                "total_input_tokens": 0,
+                "total_output_tokens": 0,
             },
             config=config,
         )
         latency_ms = int((time.time() - start) * 1000)
+
+        input_tok = result.get("total_input_tokens", 0)
+        output_tok = result.get("total_output_tokens", 0)
+        in_price, out_price = _MODEL_PRICING.get(settings.claude_model, (3.00, 15.00))
+        cost_usd = (input_tok * in_price + output_tok * out_price) / 1_000_000
+
+        query_logger.info(json.dumps({
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "query": req.query,
+            "route": result.get("route", "unknown"),
+            "input_tokens": input_tok,
+            "output_tokens": output_tok,
+            "cost_usd": round(cost_usd, 6),
+            "latency_ms": latency_ms,
+        }))
+
         return QueryResponse(
             answer=result.get("answer", ""),
             citations=result.get("citations", []),
