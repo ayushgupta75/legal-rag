@@ -36,10 +36,6 @@ langsmith>=0.1.0
 # Qdrant
 qdrant-client>=1.9.0
 
-# LlamaIndex (RAG v2)
-llama-index-core>=0.14.0
-llama-index-embeddings-openai>=0.6.0
-llama-index-vector-stores-postgres>=0.8.0
 
 # Dev / test
 pytest>=8.2.0

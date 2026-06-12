@@ -25,6 +25,9 @@ data
 # Pytest
 .pytest_cache/
 
-# Docker
+# Logs
+logs/
 *.log
+
+# Docker
 qdrant_backup.tar.gz

@@ -6,6 +6,8 @@ Strategy: recursive structural splitting — split on natural legal boundaries
 exceeds MAX_CHARS.  Every chunk carries full citation metadata and a parent_id
 so callers can do parent-doc retrieval.
 """
+from __future__ import annotations
+
 import re
 import hashlib
 

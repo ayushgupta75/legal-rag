@@ -1,6 +1,7 @@
 """
 Shared LangGraph state.  Every node reads from and writes to this TypedDict.
 """
+import operator
 from typing import Annotated, Literal
 from typing_extensions import TypedDict
 from langgraph.graph.message import add_messages
@@ -32,3 +33,7 @@ class AgentState(TypedDict):
     # Metadata
     thread_id: str
     latency_ms: int
+
+    # Anthropic API token usage — accumulated across all Claude calls in a query
+    total_input_tokens: Annotated[int, operator.add]
+    total_output_tokens: Annotated[int, operator.add]
